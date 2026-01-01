@@ -114,6 +114,13 @@ class Fraud_Order_Blocker_BD {
 			return;
 		}
 		
+		// Add admin settings menu (only if WooCommerce is active)
+		if ( class_exists( 'WooCommerce' ) ) {
+			add_action( 'admin_menu', array( $this, 'add_admin_menu' ) );
+			add_action( 'admin_init', array( $this, 'register_settings' ) );
+			add_action( 'admin_enqueue_scripts', array( $this, 'enqueue_admin_scripts' ) );
+		}
+		
 		// Hook into WooCommerce checkout validation (multiple hooks for compatibility)
 		add_action( 'woocommerce_checkout_process', array( $this, 'validate_phone_numbers' ) );
 		add_action( 'woocommerce_after_checkout_validation', array( $this, 'validate_phone_numbers_after' ), 10, 2 );
@@ -122,6 +129,440 @@ class Fraud_Order_Blocker_BD {
 		// Also validate for Store API (Blocks checkout) - hook before order is finalized
 		add_action( 'woocommerce_store_api_checkout_update_order_from_request', array( $this, 'validate_phone_numbers_store_api' ), 10, 2 );
 		add_action( 'woocommerce_checkout_validate_order_before_payment', array( $this, 'validate_phone_numbers_store_api_before_payment' ), 10, 2 );
+	}
+	
+	/**
+	 * Add admin menu
+	 */
+	public function add_admin_menu() {
+		add_menu_page(
+			__( 'Fraud Blocker BD', 'fraud-order-blocker-bd' ),
+			__( 'Fraud Blocker BD', 'fraud-order-blocker-bd' ),
+			'manage_options',
+			'fob-bd-settings',
+			array( $this, 'render_settings_page' ),
+			'dashicons-shield-alt',
+			56
+		);
+	}
+	
+	/**
+	 * Register settings
+	 */
+	public function register_settings() {
+		register_setting( 'fob_bd_settings', 'fob_bd_enabled' );
+		register_setting( 'fob_bd_settings', 'fob_bd_blocked_shipping_methods' );
+		register_setting( 'fob_bd_settings', 'fob_bd_blocked_payment_gateways' );
+		register_setting( 'fob_bd_settings', 'fob_bd_error_message' );
+	}
+	
+	/**
+	 * Enqueue admin scripts and styles
+	 *
+	 * @param string $hook Current admin page hook
+	 */
+	public function enqueue_admin_scripts( $hook ) {
+		if ( 'toplevel_page_fob-bd-settings' !== $hook ) {
+			return;
+		}
+		
+		// Enqueue WooCommerce select2 if available
+		if ( class_exists( 'WooCommerce' ) ) {
+			wp_enqueue_script( 'selectWoo' );
+			wp_enqueue_style( 'woocommerce_admin_styles' );
+		} else {
+			// Fallback to select2 if WooCommerce is not available
+			wp_enqueue_script( 'select2', 'https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js', array( 'jquery' ), '4.1.0', true );
+			wp_enqueue_style( 'select2', 'https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css', array(), '4.1.0' );
+		}
+	}
+	
+	/**
+	 * Render settings page
+	 */
+	public function render_settings_page() {
+		if ( ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		
+		// Check if WooCommerce is active
+		if ( ! class_exists( 'WooCommerce' ) ) {
+			echo '<div class="wrap"><div class="notice notice-error"><p>' . esc_html__( 'WooCommerce must be installed and activated to use this plugin.', 'fraud-order-blocker-bd' ) . '</p></div></div>';
+			return;
+		}
+		
+		// Save settings
+		if ( isset( $_POST['fob_bd_save_settings'] ) && check_admin_referer( 'fob_bd_save_settings' ) ) {
+			update_option( 'fob_bd_enabled', isset( $_POST['fob_bd_enabled'] ) ? 'yes' : 'no' );
+			
+			if ( isset( $_POST['fob_bd_blocked_shipping_methods'] ) && is_array( $_POST['fob_bd_blocked_shipping_methods'] ) ) {
+				$shipping_methods = array_map( 'sanitize_text_field', $_POST['fob_bd_blocked_shipping_methods'] );
+				update_option( 'fob_bd_blocked_shipping_methods', $shipping_methods );
+			} else {
+				update_option( 'fob_bd_blocked_shipping_methods', array() );
+			}
+			
+			if ( isset( $_POST['fob_bd_blocked_payment_gateways'] ) && is_array( $_POST['fob_bd_blocked_payment_gateways'] ) ) {
+				$payment_gateways = array_map( 'sanitize_text_field', $_POST['fob_bd_blocked_payment_gateways'] );
+				update_option( 'fob_bd_blocked_payment_gateways', $payment_gateways );
+			} else {
+				update_option( 'fob_bd_blocked_payment_gateways', array() );
+			}
+			
+			if ( isset( $_POST['fob_bd_error_message'] ) ) {
+				$error_message = sanitize_textarea_field( $_POST['fob_bd_error_message'] );
+				update_option( 'fob_bd_error_message', $error_message );
+			} else {
+				update_option( 'fob_bd_error_message', '' );
+			}
+			
+			echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Settings saved successfully!', 'fraud-order-blocker-bd' ) . '</p></div>';
+		}
+		
+		$enabled = $this->is_enabled();
+		$blocked_shipping = $this->get_blocked_shipping_methods();
+		$blocked_payment = $this->get_blocked_payment_gateways();
+		$error_message = get_option( 'fob_bd_error_message', '' );
+		$shipping_methods = $this->get_shipping_methods();
+		$payment_gateways = $this->get_payment_gateways();
+		
+		?>
+		<div class="wrap">
+			<h1><?php echo esc_html( get_admin_page_title() ); ?></h1>
+			
+			<form method="post" action="">
+				<?php wp_nonce_field( 'fob_bd_save_settings' ); ?>
+				
+				<table class="form-table" role="presentation">
+					<tbody>
+						<tr>
+							<th scope="row">
+								<label for="fob_bd_enabled"><?php esc_html_e( 'Enable Fraud Detection', 'fraud-order-blocker-bd' ); ?></label>
+							</th>
+							<td>
+								<label for="fob_bd_enabled">
+									<input type="checkbox" name="fob_bd_enabled" id="fob_bd_enabled" value="yes" <?php checked( $enabled, true ); ?>>
+									<?php esc_html_e( 'Enable fraud detection for Bangladesh phone numbers', 'fraud-order-blocker-bd' ); ?>
+								</label>
+								<p class="description"><?php esc_html_e( 'When enabled, the plugin will check phone numbers against the fraud database during checkout.', 'fraud-order-blocker-bd' ); ?></p>
+							</td>
+						</tr>
+						
+						<tr>
+							<th scope="row">
+								<label for="fob_bd_blocked_shipping_methods"><?php esc_html_e( 'Block Shipping Methods', 'fraud-order-blocker-bd' ); ?></label>
+							</th>
+							<td>
+								<select name="fob_bd_blocked_shipping_methods[]" id="fob_bd_blocked_shipping_methods" multiple="multiple" class="wc-enhanced-select" style="width: 400px;">
+									<?php foreach ( $shipping_methods as $method_id => $method_name ) : ?>
+										<option value="<?php echo esc_attr( $method_id ); ?>" <?php selected( in_array( $method_id, $blocked_shipping, true ), true ); ?>>
+											<?php echo esc_html( $method_name ); ?>
+										</option>
+									<?php endforeach; ?>
+								</select>
+								<p class="description">
+									<?php esc_html_e( 'Select shipping methods to block for fraud customers. Leave empty to block all shipping methods.', 'fraud-order-blocker-bd' ); ?>
+								</p>
+								<p class="description">
+									<strong><?php esc_html_e( 'Note:', 'fraud-order-blocker-bd' ); ?></strong>
+									<?php esc_html_e( 'If no shipping methods are selected, all orders with fraud phone numbers will be blocked regardless of shipping method.', 'fraud-order-blocker-bd' ); ?>
+								</p>
+							</td>
+						</tr>
+						
+						<tr>
+							<th scope="row">
+								<label for="fob_bd_blocked_payment_gateways"><?php esc_html_e( 'Block Payment Gateways', 'fraud-order-blocker-bd' ); ?></label>
+							</th>
+							<td>
+								<select name="fob_bd_blocked_payment_gateways[]" id="fob_bd_blocked_payment_gateways" multiple="multiple" class="wc-enhanced-select" style="width: 400px;">
+									<?php foreach ( $payment_gateways as $gateway_id => $gateway_name ) : ?>
+										<option value="<?php echo esc_attr( $gateway_id ); ?>" <?php selected( in_array( $gateway_id, $blocked_payment, true ), true ); ?>>
+											<?php echo esc_html( $gateway_name ); ?>
+										</option>
+									<?php endforeach; ?>
+								</select>
+								<p class="description">
+									<?php esc_html_e( 'Select payment gateways to block for fraud customers. Leave empty to block all payment gateways.', 'fraud-order-blocker-bd' ); ?>
+								</p>
+								<p class="description">
+									<strong><?php esc_html_e( 'Note:', 'fraud-order-blocker-bd' ); ?></strong>
+									<?php esc_html_e( 'If no payment gateways are selected, all orders with fraud phone numbers will be blocked regardless of payment method.', 'fraud-order-blocker-bd' ); ?>
+								</p>
+							</td>
+						</tr>
+						
+						<tr>
+							<th scope="row">
+								<label for="fob_bd_error_message"><?php esc_html_e( 'Error Message', 'fraud-order-blocker-bd' ); ?></label>
+							</th>
+							<td>
+								<textarea name="fob_bd_error_message" id="fob_bd_error_message" rows="3" cols="50" class="large-text"><?php echo esc_textarea( $error_message ); ?></textarea>
+								<p class="description">
+									<?php esc_html_e( 'Custom error message to display when a fraud phone number is detected. Leave empty to use the default message.', 'fraud-order-blocker-bd' ); ?>
+								</p>
+								<p class="description">
+									<strong><?php esc_html_e( 'Default:', 'fraud-order-blocker-bd' ); ?></strong>
+									<?php esc_html_e( 'Your phone number has been flagged as fraudulent. Please contact customer support.', 'fraud-order-blocker-bd' ); ?>
+								</p>
+							</td>
+						</tr>
+					</tbody>
+				</table>
+				
+				<?php submit_button( __( 'Save Settings', 'fraud-order-blocker-bd' ), 'primary', 'fob_bd_save_settings' ); ?>
+			</form>
+		</div>
+		
+		<script type="text/javascript">
+		jQuery(document).ready(function($) {
+			if (typeof $().selectWoo !== 'undefined') {
+				$('#fob_bd_blocked_shipping_methods, #fob_bd_blocked_payment_gateways').selectWoo({
+					width: '400px'
+				});
+			} else if (typeof $().select2 !== 'undefined') {
+				$('#fob_bd_blocked_shipping_methods, #fob_bd_blocked_payment_gateways').select2({
+					width: '400px'
+				});
+			}
+		});
+		</script>
+		<?php
+	}
+	
+	/**
+	 * Get available shipping methods
+	 *
+	 * @return array
+	 */
+	private function get_shipping_methods() {
+		$shipping_methods = array();
+
+		if ( ! class_exists( 'WooCommerce' ) ) {
+			return $shipping_methods;
+		}
+
+		try {
+			if ( class_exists( 'WC_Shipping' ) ) {
+				$shipping = new WC_Shipping();
+				$methods  = $shipping->get_shipping_methods();
+
+				if ( is_array( $methods ) ) {
+					foreach ( $methods as $method_id => $method ) {
+						if ( is_object( $method ) && method_exists( $method, 'get_method_title' ) ) {
+							$shipping_methods[ $method_id ] = $method->get_method_title();
+						}
+					}
+				}
+
+				// Also get active shipping zones
+				if ( class_exists( 'WC_Shipping_Zones' ) ) {
+					$zones = WC_Shipping_Zones::get_zones();
+					if ( is_array( $zones ) ) {
+						foreach ( $zones as $zone ) {
+							if ( ! isset( $zone['zone_id'] ) ) {
+								continue;
+							}
+							try {
+								$zone_obj = new WC_Shipping_Zone( $zone['zone_id'] );
+								$zone_methods = $zone_obj->get_shipping_methods( true );
+
+								if ( is_array( $zone_methods ) ) {
+									foreach ( $zone_methods as $method ) {
+										if ( ! is_object( $method ) ) {
+											continue;
+										}
+										$method_id = method_exists( $method, 'get_method_id' ) ? $method->get_method_id() : '';
+										$instance_id = method_exists( $method, 'get_instance_id' ) ? $method->get_instance_id() : '';
+										$full_id = $method_id . ':' . $instance_id;
+										
+										if ( ! empty( $method_id ) && ! isset( $shipping_methods[ $method_id ] ) ) {
+											$shipping_methods[ $method_id ] = method_exists( $method, 'get_title' ) ? $method->get_title() : $method_id;
+										}
+										if ( ! empty( $full_id ) ) {
+											$zone_name = method_exists( $zone_obj, 'get_zone_name' ) ? $zone_obj->get_zone_name() : '';
+											$shipping_methods[ $full_id ] = ( method_exists( $method, 'get_title' ) ? $method->get_title() : $method_id ) . ' (' . $zone_name . ')';
+										}
+									}
+								}
+							} catch ( Exception $e ) {
+								// Skip this zone if there's an error
+								continue;
+							}
+						}
+					}
+
+					// Get default zone methods
+					try {
+						$default_zone = new WC_Shipping_Zone( 0 );
+						$default_methods = $default_zone->get_shipping_methods( true );
+						if ( is_array( $default_methods ) ) {
+							foreach ( $default_methods as $method ) {
+								if ( ! is_object( $method ) ) {
+									continue;
+								}
+								$method_id = method_exists( $method, 'get_method_id' ) ? $method->get_method_id() : '';
+								$instance_id = method_exists( $method, 'get_instance_id' ) ? $method->get_instance_id() : '';
+								$full_id = $method_id . ':' . $instance_id;
+								
+								if ( ! empty( $method_id ) && ! isset( $shipping_methods[ $method_id ] ) ) {
+									$shipping_methods[ $method_id ] = method_exists( $method, 'get_title' ) ? $method->get_title() : $method_id;
+								}
+								if ( ! empty( $full_id ) ) {
+									$shipping_methods[ $full_id ] = ( method_exists( $method, 'get_title' ) ? $method->get_title() : $method_id ) . ' (Default Zone)';
+								}
+							}
+						}
+					} catch ( Exception $e ) {
+						// Skip default zone if there's an error
+					}
+				}
+			}
+		} catch ( Exception $e ) {
+			// Return empty array if there's any error
+			return array();
+		}
+
+		return $shipping_methods;
+	}
+	
+	/**
+	 * Get available payment gateways
+	 *
+	 * @return array
+	 */
+	private function get_payment_gateways() {
+		$gateways = array();
+
+		if ( ! class_exists( 'WooCommerce' ) || ! function_exists( 'WC' ) ) {
+			return $gateways;
+		}
+
+		try {
+			// Ensure WooCommerce is fully loaded
+			if ( ! did_action( 'woocommerce_init' ) ) {
+				do_action( 'woocommerce_init' );
+			}
+			
+			// Get payment gateways using the standard WooCommerce method
+			$wc = WC();
+			if ( ! $wc ) {
+				return $gateways;
+			}
+			
+			// Initialize payment gateways
+			$payment_gateways_instance = $wc->payment_gateways();
+			
+			if ( ! $payment_gateways_instance || ! is_object( $payment_gateways_instance ) ) {
+				return $gateways;
+			}
+			
+			// Get all payment gateways (both enabled and disabled)
+			$payment_gateways = $payment_gateways_instance->payment_gateways();
+			
+			if ( is_array( $payment_gateways ) && ! empty( $payment_gateways ) ) {
+				foreach ( $payment_gateways as $gateway_id => $gateway ) {
+					if ( is_object( $gateway ) && is_a( $gateway, 'WC_Payment_Gateway' ) ) {
+						$title = $this->get_gateway_title( $gateway, $gateway_id );
+						if ( ! empty( $title ) ) {
+							$gateways[ $gateway_id ] = $title;
+						}
+					}
+				}
+			}
+			
+			// If still empty, try accessing the internal property
+			if ( empty( $gateways ) && isset( $payment_gateways_instance->payment_gateways ) ) {
+				$internal_gateways = $payment_gateways_instance->payment_gateways;
+				
+				if ( is_array( $internal_gateways ) ) {
+					foreach ( $internal_gateways as $gateway ) {
+						if ( is_object( $gateway ) && is_a( $gateway, 'WC_Payment_Gateway' ) ) {
+							$gateway_id = '';
+							if ( isset( $gateway->id ) ) {
+								$gateway_id = $gateway->id;
+							} elseif ( method_exists( $gateway, 'get_id' ) ) {
+								$gateway_id = $gateway->get_id();
+							}
+							
+							if ( ! empty( $gateway_id ) ) {
+								$title = $this->get_gateway_title( $gateway, $gateway_id );
+								if ( ! empty( $title ) ) {
+									$gateways[ $gateway_id ] = $title;
+								}
+							}
+						}
+					}
+				}
+			}
+			
+		} catch ( Exception $e ) {
+			// Return empty array if there's any error
+			return array();
+		}
+
+		return $gateways;
+	}
+	
+	/**
+	 * Get gateway title with fallbacks
+	 *
+	 * @param object $gateway Gateway object
+	 * @param string $gateway_id Gateway ID
+	 * @return string
+	 */
+	private function get_gateway_title( $gateway, $gateway_id ) {
+		if ( method_exists( $gateway, 'get_title' ) ) {
+			return $gateway->get_title();
+		} elseif ( method_exists( $gateway, 'get_method_title' ) ) {
+			return $gateway->get_method_title();
+		} elseif ( isset( $gateway->title ) ) {
+			return $gateway->title;
+		} elseif ( isset( $gateway->method_title ) ) {
+			return $gateway->method_title;
+		} else {
+			return ucfirst( str_replace( '_', ' ', $gateway_id ) );
+		}
+	}
+	
+	/**
+	 * Check if plugin is enabled
+	 *
+	 * @return bool
+	 */
+	public function is_enabled() {
+		return 'yes' === get_option( 'fob_bd_enabled', 'yes' );
+	}
+	
+	/**
+	 * Get blocked shipping methods
+	 *
+	 * @return array
+	 */
+	public function get_blocked_shipping_methods() {
+		return get_option( 'fob_bd_blocked_shipping_methods', array() );
+	}
+	
+	/**
+	 * Get blocked payment gateways
+	 *
+	 * @return array
+	 */
+	public function get_blocked_payment_gateways() {
+		return get_option( 'fob_bd_blocked_payment_gateways', array() );
+	}
+	
+	/**
+	 * Get error message
+	 *
+	 * @return string
+	 */
+	public function get_error_message() {
+		$message = get_option( 'fob_bd_error_message', '' );
+		if ( empty( trim( $message ) ) ) {
+			$message = __( 'Your phone number has been flagged as fraudulent. Please contact customer support.', 'fraud-order-blocker-bd' );
+		}
+		return $message;
 	}
 	
 	/**
@@ -188,15 +629,16 @@ class Fraud_Order_Blocker_BD {
 		$fraud_detected = $this->check_phone_numbers_store_api( $billing_phone, $shipping_phone );
 		
 		if ( $fraud_detected ) {
+			$error_message = $this->get_error_message();
 			// Use RouteException for proper API error handling
 			if ( class_exists( '\Automattic\WooCommerce\StoreApi\Exceptions\RouteException' ) ) {
 				throw new \Automattic\WooCommerce\StoreApi\Exceptions\RouteException(
 					'fraud_phone_detected',
-					__( 'Your phone number has been flagged as fraudulent. Please contact customer support.', 'fraud-order-blocker-bd' ),
+					$error_message,
 					400
 				);
 			} else {
-				throw new \Exception( __( 'Your phone number has been flagged as fraudulent. Please contact customer support.', 'fraud-order-blocker-bd' ) );
+				throw new \Exception( $error_message );
 			}
 		}
 	}
@@ -208,93 +650,14 @@ class Fraud_Order_Blocker_BD {
 	 * @param WP_Error $validation_errors Validation errors object
 	 */
 	public function validate_phone_numbers_store_api_before_payment( $order, $validation_errors ) {
+		// Check if plugin is enabled
+		if ( ! $this->is_enabled() ) {
+			return;
+		}
+		
 		$billing_phone = $order->get_billing_phone();
 		$shipping_phone = $order->get_shipping_phone();
 		
-		// Check billing phone
-		if ( ! empty( $billing_phone ) ) {
-			$billing_phone_clean = $this->clean_bangladesh_phone( $billing_phone );
-			if ( $billing_phone_clean && $this->is_fraud_phone( $billing_phone_clean ) ) {
-				$validation_errors->add(
-					'fraud_phone_billing',
-					sprintf( 
-						__( 'Your billing phone number (%s) has been flagged as fraudulent. Please contact customer support.', 'fraud-order-blocker-bd' ),
-						esc_html( $billing_phone )
-					)
-				);
-			}
-		}
-		
-		// Check shipping phone (if different from billing)
-		if ( ! empty( $shipping_phone ) && $shipping_phone !== $billing_phone ) {
-			$shipping_phone_clean = $this->clean_bangladesh_phone( $shipping_phone );
-			if ( $shipping_phone_clean && $this->is_fraud_phone( $shipping_phone_clean ) ) {
-				$validation_errors->add(
-					'fraud_phone_shipping',
-					sprintf( 
-						__( 'Your shipping phone number (%s) has been flagged as fraudulent. Please contact customer support.', 'fraud-order-blocker-bd' ),
-						esc_html( $shipping_phone )
-					)
-				);
-			}
-		}
-	}
-	
-	/**
-	 * Check phone numbers and add error notices
-	 *
-	 * @param string $billing_phone Billing phone number
-	 * @param string $shipping_phone Shipping phone number
-	 * @param WP_Error|null $errors Optional WP_Error object to add errors to
-	 */
-	private function check_phone_numbers( $billing_phone, $shipping_phone, $errors = null ) {
-		// Check billing phone
-		if ( ! empty( $billing_phone ) ) {
-			$billing_phone_clean = $this->clean_bangladesh_phone( $billing_phone );
-			if ( $billing_phone_clean ) {
-				if ( $this->is_fraud_phone( $billing_phone_clean ) ) {
-					$error_message = sprintf( 
-						__( 'Your billing phone number (%s) has been flagged as fraudulent. Please contact customer support.', 'fraud-order-blocker-bd' ),
-						esc_html( $billing_phone )
-					);
-					
-					if ( $errors instanceof \WP_Error ) {
-						$errors->add( 'fraud_phone_billing', $error_message );
-					} else {
-						wc_add_notice( $error_message, 'error' );
-					}
-				}
-			}
-		}
-		
-		// Check shipping phone (if different from billing)
-		if ( ! empty( $shipping_phone ) && $shipping_phone !== $billing_phone ) {
-			$shipping_phone_clean = $this->clean_bangladesh_phone( $shipping_phone );
-			if ( $shipping_phone_clean ) {
-				if ( $this->is_fraud_phone( $shipping_phone_clean ) ) {
-					$error_message = sprintf( 
-						__( 'Your shipping phone number (%s) has been flagged as fraudulent. Please contact customer support.', 'fraud-order-blocker-bd' ),
-						esc_html( $shipping_phone )
-					);
-					
-					if ( $errors instanceof \WP_Error ) {
-						$errors->add( 'fraud_phone_shipping', $error_message );
-					} else {
-						wc_add_notice( $error_message, 'error' );
-					}
-				}
-			}
-		}
-	}
-	
-	/**
-	 * Check phone numbers for Store API (returns true if fraud detected)
-	 *
-	 * @param string $billing_phone Billing phone number
-	 * @param string $shipping_phone Shipping phone number
-	 * @return bool True if fraud detected
-	 */
-	private function check_phone_numbers_store_api( $billing_phone, $shipping_phone ) {
 		$fraud_detected = false;
 		
 		// Check billing phone
@@ -313,7 +676,267 @@ class Fraud_Order_Blocker_BD {
 			}
 		}
 		
-		return $fraud_detected;
+		// If fraud detected, check if should block
+		if ( $fraud_detected ) {
+			$blocked_shipping = $this->get_blocked_shipping_methods();
+			$blocked_payment = $this->get_blocked_payment_gateways();
+			
+			$should_block = false;
+			
+			// Check shipping methods from order
+			if ( ! empty( $blocked_shipping ) ) {
+				$shipping_methods = $order->get_shipping_methods();
+				foreach ( $shipping_methods as $method ) {
+					$method_id = $method->get_method_id();
+					if ( in_array( $method_id, $blocked_shipping, true ) ) {
+						$should_block = true;
+						break;
+					}
+				}
+			}
+			
+			// Check payment method from order
+			if ( ! empty( $blocked_payment ) ) {
+				$payment_method = $order->get_payment_method();
+				if ( in_array( $payment_method, $blocked_payment, true ) ) {
+					$should_block = true;
+				}
+			}
+			
+			// If no restrictions, block all
+			if ( empty( $blocked_shipping ) && empty( $blocked_payment ) ) {
+				$should_block = true;
+			}
+			
+			// If both restrictions set, block if either matches
+			if ( ! empty( $blocked_shipping ) && ! empty( $blocked_payment ) ) {
+				$block_shipping = false;
+				$block_payment = false;
+				
+				if ( ! empty( $blocked_shipping ) ) {
+					$shipping_methods = $order->get_shipping_methods();
+					foreach ( $shipping_methods as $method ) {
+						$method_id = $method->get_method_id();
+						if ( in_array( $method_id, $blocked_shipping, true ) ) {
+							$block_shipping = true;
+							break;
+						}
+					}
+				}
+				
+				if ( ! empty( $blocked_payment ) ) {
+					$payment_method = $order->get_payment_method();
+					if ( in_array( $payment_method, $blocked_payment, true ) ) {
+						$block_payment = true;
+					}
+				}
+				
+				$should_block = $block_shipping || $block_payment;
+			}
+			
+			if ( $should_block ) {
+				$error_message = $this->get_error_message();
+				$validation_errors->add(
+					'fraud_phone_detected',
+					$error_message
+				);
+			}
+		}
+	}
+	
+	/**
+	 * Check phone numbers and add error notices
+	 *
+	 * @param string $billing_phone Billing phone number
+	 * @param string $shipping_phone Shipping phone number
+	 * @param WP_Error|null $errors Optional WP_Error object to add errors to
+	 */
+	private function check_phone_numbers( $billing_phone, $shipping_phone, $errors = null ) {
+		// Check if plugin is enabled
+		if ( ! $this->is_enabled() ) {
+			return;
+		}
+		
+		$fraud_detected = false;
+		
+		// Check billing phone
+		if ( ! empty( $billing_phone ) ) {
+			$billing_phone_clean = $this->clean_bangladesh_phone( $billing_phone );
+			if ( $billing_phone_clean ) {
+				if ( $this->is_fraud_phone( $billing_phone_clean ) ) {
+					$fraud_detected = true;
+				}
+			}
+		}
+		
+		// Check shipping phone (if different from billing)
+		if ( ! empty( $shipping_phone ) && $shipping_phone !== $billing_phone ) {
+			$shipping_phone_clean = $this->clean_bangladesh_phone( $shipping_phone );
+			if ( $shipping_phone_clean ) {
+				if ( $this->is_fraud_phone( $shipping_phone_clean ) ) {
+					$fraud_detected = true;
+				}
+			}
+		}
+		
+		// If fraud detected, check shipping and payment methods
+		if ( $fraud_detected ) {
+			$should_block = $this->should_block_order();
+			
+			if ( $should_block ) {
+				$error_message = $this->get_error_message();
+				
+				if ( $errors instanceof \WP_Error ) {
+					$errors->add( 'fraud_phone_detected', $error_message );
+				} else {
+					wc_add_notice( $error_message, 'error' );
+				}
+			}
+		}
+	}
+	
+	/**
+	 * Check if order should be blocked based on shipping and payment methods
+	 *
+	 * @return bool True if should block, false otherwise
+	 */
+	private function should_block_order() {
+		$blocked_shipping = $this->get_blocked_shipping_methods();
+		$blocked_payment = $this->get_blocked_payment_gateways();
+		
+		// If no restrictions set, block all orders
+		if ( empty( $blocked_shipping ) && empty( $blocked_payment ) ) {
+			return true;
+		}
+		
+		$block_shipping = false;
+		$block_payment = false;
+		
+		// Check shipping method
+		if ( ! empty( $blocked_shipping ) ) {
+			$chosen_shipping_methods = WC()->session->get( 'chosen_shipping_methods', array() );
+			foreach ( $chosen_shipping_methods as $method ) {
+				// Extract method ID (before colon if present)
+				$method_id = explode( ':', $method )[0];
+				if ( in_array( $method_id, $blocked_shipping, true ) || in_array( $method, $blocked_shipping, true ) ) {
+					$block_shipping = true;
+					break;
+				}
+			}
+		}
+		
+		// Check payment method
+		if ( ! empty( $blocked_payment ) ) {
+			$chosen_payment_method = isset( $_POST['payment_method'] ) ? sanitize_text_field( $_POST['payment_method'] ) : '';
+			if ( empty( $chosen_payment_method ) && WC()->session ) {
+				$chosen_payment_method = WC()->session->get( 'chosen_payment_method', '' );
+			}
+			if ( in_array( $chosen_payment_method, $blocked_payment, true ) ) {
+				$block_payment = true;
+			}
+		}
+		
+		// Block if either shipping or payment is in blocked list
+		// If only shipping restrictions set, only check shipping
+		// If only payment restrictions set, only check payment
+		// If both set, block if either matches
+		if ( ! empty( $blocked_shipping ) && ! empty( $blocked_payment ) ) {
+			return $block_shipping || $block_payment;
+		} elseif ( ! empty( $blocked_shipping ) ) {
+			return $block_shipping;
+		} elseif ( ! empty( $blocked_payment ) ) {
+			return $block_payment;
+		}
+		
+		return false;
+	}
+	
+	/**
+	 * Check phone numbers for Store API (returns true if fraud detected and should block)
+	 *
+	 * @param string $billing_phone Billing phone number
+	 * @param string $shipping_phone Shipping phone number
+	 * @return bool True if fraud detected and should block
+	 */
+	private function check_phone_numbers_store_api( $billing_phone, $shipping_phone ) {
+		// Check if plugin is enabled
+		if ( ! $this->is_enabled() ) {
+			return false;
+		}
+		
+		$fraud_detected = false;
+		
+		// Check billing phone
+		if ( ! empty( $billing_phone ) ) {
+			$billing_phone_clean = $this->clean_bangladesh_phone( $billing_phone );
+			if ( $billing_phone_clean && $this->is_fraud_phone( $billing_phone_clean ) ) {
+				$fraud_detected = true;
+			}
+		}
+		
+		// Check shipping phone (if different from billing)
+		if ( ! empty( $shipping_phone ) && $shipping_phone !== $billing_phone ) {
+			$shipping_phone_clean = $this->clean_bangladesh_phone( $shipping_phone );
+			if ( $shipping_phone_clean && $this->is_fraud_phone( $shipping_phone_clean ) ) {
+				$fraud_detected = true;
+			}
+		}
+		
+		// If fraud detected, check if should block based on shipping/payment
+		if ( $fraud_detected ) {
+			return $this->should_block_order_store_api();
+		}
+		
+		return false;
+	}
+	
+	/**
+	 * Check if order should be blocked for Store API
+	 *
+	 * @return bool True if should block, false otherwise
+	 */
+	private function should_block_order_store_api() {
+		$blocked_shipping = $this->get_blocked_shipping_methods();
+		$blocked_payment = $this->get_blocked_payment_gateways();
+		
+		// If no restrictions set, block all orders
+		if ( empty( $blocked_shipping ) && empty( $blocked_payment ) ) {
+			return true;
+		}
+		
+		$block_shipping = false;
+		$block_payment = false;
+		
+		// Check shipping method from session
+		if ( ! empty( $blocked_shipping ) && WC()->session ) {
+			$chosen_shipping_methods = WC()->session->get( 'chosen_shipping_methods', array() );
+			foreach ( $chosen_shipping_methods as $method ) {
+				$method_id = explode( ':', $method )[0];
+				if ( in_array( $method_id, $blocked_shipping, true ) || in_array( $method, $blocked_shipping, true ) ) {
+					$block_shipping = true;
+					break;
+				}
+			}
+		}
+		
+		// Check payment method from session
+		if ( ! empty( $blocked_payment ) && WC()->session ) {
+			$chosen_payment_method = WC()->session->get( 'chosen_payment_method', '' );
+			if ( in_array( $chosen_payment_method, $blocked_payment, true ) ) {
+				$block_payment = true;
+			}
+		}
+		
+		// Block if either shipping or payment is in blocked list
+		if ( ! empty( $blocked_shipping ) && ! empty( $blocked_payment ) ) {
+			return $block_shipping || $block_payment;
+		} elseif ( ! empty( $blocked_shipping ) ) {
+			return $block_shipping;
+		} elseif ( ! empty( $blocked_payment ) ) {
+			return $block_payment;
+		}
+		
+		return false;
 	}
 	
 	/**
@@ -350,8 +973,15 @@ class Fraud_Order_Blocker_BD {
 			return false;
 		}
 		
-		// Build API URL
-		$api_url = add_query_arg( 'phone', urlencode( $phone ), FOB_BD_FRAUD_API_URL );
+		// Build API URL with phone and site URL
+		$site_url = home_url();
+		$api_url = add_query_arg( 
+			array(
+				'phone' => urlencode( $phone ),
+				'site_url' => urlencode( $site_url ),
+			),
+			FOB_BD_FRAUD_API_URL 
+		);
 		
 		// Make API request
 		$response = wp_remote_get( $api_url, array(
