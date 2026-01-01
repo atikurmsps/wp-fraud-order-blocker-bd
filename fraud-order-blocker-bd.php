@@ -41,13 +41,6 @@ class Fraud_Order_Blocker_BD {
 	private static $instance = null;
 	
 	/**
-	 * Cache for API calls within the same request
-	 *
-	 * @var array
-	 */
-	private $request_cache = array();
-	
-	/**
 	 * Get instance of this class
 	 *
 	 * @return object
@@ -416,6 +409,16 @@ class Fraud_Order_Blocker_BD {
 						
 						<?php submit_button( __( 'Save Settings', 'fraud-order-blocker-bd' ), 'primary', 'fob_bd_save_settings' ); ?>
 					</form>
+					
+					<div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #ddd;">
+						<h3><?php esc_html_e( 'Cache Management', 'fraud-order-blocker-bd' ); ?></h3>
+						<p class="description">
+							<?php esc_html_e( 'Clear the fraud check cache if you need to re-check phone numbers immediately. Cache is automatically cleared when settings are saved.', 'fraud-order-blocker-bd' ); ?>
+						</p>
+						<a href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin.php?page=fob-bd-settings&fob_bd_clear_cache=1' ), 'fob_bd_clear_cache' ) ); ?>" class="button">
+							<?php esc_html_e( 'Clear Cache', 'fraud-order-blocker-bd' ); ?>
+						</a>
+					</div>
 				</div>
 				
 				<div class="fob-bd-settings-sidebar">
@@ -747,11 +750,6 @@ class Fraud_Order_Blocker_BD {
 	 * Validate phone numbers during checkout (standard checkout)
 	 */
 	public function validate_phone_numbers() {
-		// Verify nonce for security
-		if ( ! isset( $_POST['woocommerce-process-checkout-nonce'] ) && ! isset( $_POST['_wpnonce'] ) ) {
-			return;
-		}
-		
 		$billing_phone = isset( $_POST['billing_phone'] ) ? sanitize_text_field( wp_unslash( $_POST['billing_phone'] ) ) : '';
 		$shipping_phone = isset( $_POST['shipping_phone'] ) ? sanitize_text_field( wp_unslash( $_POST['shipping_phone'] ) ) : '';
 		
@@ -833,20 +831,17 @@ class Fraud_Order_Blocker_BD {
 			}
 		}
 		
-		// Check shipping phone (only if different from billing to avoid duplicate API calls)
+		// Check shipping phone (if different from billing)
 		if ( ! empty( $shipping_phone ) && $shipping_phone !== $billing_phone ) {
 			$shipping_phone_clean = $this->clean_bangladesh_phone( $shipping_phone );
-			// Only check if cleaned phone is different from billing cleaned phone
-			if ( $shipping_phone_clean && $shipping_phone_clean !== $billing_phone_clean ) {
-				if ( $this->is_fraud_phone( 
-					$shipping_phone_clean,
-					$customer_data['name'],
-					$customer_data['address'],
-					$customer_data['product_name'],
-					$customer_data['amount']
-				) ) {
-					$fraud_detected = true;
-				}
+			if ( $shipping_phone_clean && $this->is_fraud_phone( 
+				$shipping_phone_clean,
+				$customer_data['name'],
+				$customer_data['address'],
+				$customer_data['product_name'],
+				$customer_data['amount']
+			) ) {
+				$fraud_detected = true;
 			}
 		}
 		
@@ -937,34 +932,34 @@ class Fraud_Order_Blocker_BD {
 		$fraud_detected = false;
 		
 		// Check billing phone
-		$billing_phone_clean = '';
 		if ( ! empty( $billing_phone ) ) {
 			$billing_phone_clean = $this->clean_bangladesh_phone( $billing_phone );
 			if ( $billing_phone_clean ) {
-				if ( $this->is_fraud_phone( 
+				$is_fraud = $this->is_fraud_phone( 
 					$billing_phone_clean,
 					$customer_data['name'],
 					$customer_data['address'],
 					$customer_data['product_name'],
 					$customer_data['amount']
-				) ) {
+				);
+				if ( $is_fraud ) {
 					$fraud_detected = true;
 				}
 			}
 		}
 		
-		// Check shipping phone (only if different from billing to avoid duplicate API calls)
+		// Check shipping phone (if different from billing)
 		if ( ! empty( $shipping_phone ) && $shipping_phone !== $billing_phone ) {
 			$shipping_phone_clean = $this->clean_bangladesh_phone( $shipping_phone );
-			// Only check if cleaned phone is different from billing cleaned phone
-			if ( $shipping_phone_clean && $shipping_phone_clean !== $billing_phone_clean ) {
-				if ( $this->is_fraud_phone( 
+			if ( $shipping_phone_clean ) {
+				$is_fraud = $this->is_fraud_phone( 
 					$shipping_phone_clean,
 					$customer_data['name'],
 					$customer_data['address'],
 					$customer_data['product_name'],
 					$customer_data['amount']
-				) ) {
+				);
+				if ( $is_fraud ) {
 					$fraud_detected = true;
 				}
 			}
@@ -1075,20 +1070,17 @@ class Fraud_Order_Blocker_BD {
 			}
 		}
 		
-		// Check shipping phone (only if different from billing to avoid duplicate API calls)
+		// Check shipping phone (if different from billing)
 		if ( ! empty( $shipping_phone ) && $shipping_phone !== $billing_phone ) {
 			$shipping_phone_clean = $this->clean_bangladesh_phone( $shipping_phone );
-			// Only check if cleaned phone is different from billing cleaned phone
-			if ( $shipping_phone_clean && $shipping_phone_clean !== $billing_phone_clean ) {
-				if ( $this->is_fraud_phone( 
-					$shipping_phone_clean,
-					$customer_data['name'],
-					$customer_data['address'],
-					$customer_data['product_name'],
-					$customer_data['amount']
-				) ) {
-					$fraud_detected = true;
-				}
+			if ( $shipping_phone_clean && $this->is_fraud_phone( 
+				$shipping_phone_clean,
+				$customer_data['name'],
+				$customer_data['address'],
+				$customer_data['product_name'],
+				$customer_data['amount']
+			) ) {
+				$fraud_detected = true;
 			}
 		}
 		
@@ -1152,21 +1144,33 @@ class Fraud_Order_Blocker_BD {
 	/**
 	 * Clean and validate Bangladesh phone number
 	 * 
+	 * Ensures phone number is exactly 11 digits starting with 01xx
+	 * Removes country code (+880 or 880) if present
+	 * 
 	 * @param string $phone Phone number
-	 * @return string|false Cleaned phone number or false if invalid
+	 * @return string|false Cleaned phone number (11 digits) or false if invalid
 	 */
 	private function clean_bangladesh_phone( $phone ) {
-		// Remove all non-digit characters
+		if ( empty( $phone ) ) {
+			return false;
+		}
+		
+		// Remove all non-digit characters (spaces, dashes, plus signs, etc.)
 		$phone = preg_replace( '/[^0-9]/', '', $phone );
 		
 		// Remove country code if present (+880 or 880)
+		// Bangladesh country code is 880, so if number starts with 880 and has 13 digits total, remove it
 		if ( preg_match( '/^880(\d{10})$/', $phone, $matches ) ) {
-			$phone = '0' . $matches[1];
+			$phone = '0' . $matches[1]; // Add leading 0 to make it 11 digits
 		}
 		
-		// Check if it's a valid Bangladesh mobile number (11 digits starting with 01)
-		if ( preg_match( '/^01[3-9]\d{8}$/', $phone ) ) {
-			return $phone;
+		// Validate: Must be exactly 11 digits starting with 01
+		// Format: 01xxxxxxxxx (where x can be 0-9)
+		if ( preg_match( '/^01\d{9}$/', $phone ) ) {
+			// Double check it's exactly 11 digits
+			if ( strlen( $phone ) === 11 ) {
+				return $phone;
+			}
 		}
 		
 		return false;
@@ -1187,18 +1191,11 @@ class Fraud_Order_Blocker_BD {
 			return false;
 		}
 		
-		// Check request-level cache first (prevents duplicate calls in same request)
-		$request_cache_key = md5( $phone . $name . $address . $product_name . $amount );
-		if ( isset( $this->request_cache[ $request_cache_key ] ) ) {
-			return $this->request_cache[ $request_cache_key ];
-		}
-		
-		// Check transient cache (5 minutes) - cache key based on phone only for better hit rate
+		// Check cache first (cache for 2 minutes to avoid stale data)
+		// Cache based on phone number only - same phone = same fraud status regardless of other data
 		$cache_key = 'fob_bd_fraud_' . md5( $phone );
 		$cached_result = get_transient( $cache_key );
 		if ( false !== $cached_result ) {
-			// Store in request cache and return
-			$this->request_cache[ $request_cache_key ] = (bool) $cached_result;
 			return (bool) $cached_result;
 		}
 		
@@ -1256,12 +1253,14 @@ class Fraud_Order_Blocker_BD {
 		if ( is_wp_error( $response ) ) {
 			// Don't block order if API is down - allow filter to override
 			$default_on_error = apply_filters( 'fob_bd_block_on_api_error', false );
+			// Don't cache error responses
 			return $default_on_error;
 		}
 		
 		// Check HTTP response code
 		$response_code = wp_remote_retrieve_response_code( $response );
 		if ( 200 !== $response_code ) {
+			// Don't cache error responses
 			return false;
 		}
 		
@@ -1271,6 +1270,7 @@ class Fraud_Order_Blocker_BD {
 		
 		// Check if JSON decode failed
 		if ( json_last_error() !== JSON_ERROR_NONE ) {
+			// Don't cache error responses
 			return false;
 		}
 		
@@ -1283,11 +1283,10 @@ class Fraud_Order_Blocker_BD {
 			$is_fraud = true;
 		}
 		
-		// Cache the result for 5 minutes (based on phone number only)
-		set_transient( $cache_key, $is_fraud ? 1 : 0, 5 * MINUTE_IN_SECONDS );
+		// Only cache successful API responses (not errors)
 		
-		// Store in request-level cache to prevent duplicate calls
-		$this->request_cache[ $request_cache_key ] = $is_fraud;
+		// Cache the result for 2 minutes (reduced from 5 to prevent stale fraud data)
+		set_transient( $cache_key, $is_fraud ? 1 : 0, 2 * MINUTE_IN_SECONDS );
 		
 		// Allow filtering of final result
 		return apply_filters( 'fob_bd_is_fraud_phone', $is_fraud, $phone, $data );
