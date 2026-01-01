@@ -41,6 +41,13 @@ class Fraud_Order_Blocker_BD {
 	private static $instance = null;
 	
 	/**
+	 * Cache for API calls within the same request
+	 *
+	 * @var array
+	 */
+	private $request_cache = array();
+	
+	/**
 	 * Get instance of this class
 	 *
 	 * @return object
@@ -240,91 +247,222 @@ class Fraud_Order_Blocker_BD {
 		$payment_gateways = $this->get_payment_gateways();
 		
 		?>
+		<style>
+			.fob-bd-settings-wrapper {
+				display: flex;
+				gap: 20px;
+				margin-top: 20px;
+			}
+			.fob-bd-settings-main {
+				flex: 1;
+				min-width: 0;
+				position: relative;
+				z-index: 1;
+			}
+			.fob-bd-settings-sidebar {
+				width: 400px;
+				flex-shrink: 0;
+				position: relative;
+				z-index: 2;
+			}
+			.fob-bd-sidebar-box {
+				background: #fff;
+				border: 1px solid #ccd0d4;
+				box-shadow: 0 1px 1px rgba(0,0,0,.04);
+				padding: 20px;
+				margin-bottom: 20px;
+				position: relative;
+				z-index: 1;
+			}
+			/* Ensure select dropdowns appear above sidebar */
+			.select2-container {
+				z-index: 9999 !important;
+			}
+			.select2-dropdown {
+				z-index: 10000 !important;
+			}
+			.selectWoo-dropdown,
+			.selectWoo-menu {
+				z-index: 10000 !important;
+			}
+			.fob-bd-sidebar-box h3 {
+				margin-top: 0;
+				padding-bottom: 10px;
+				border-bottom: 1px solid #eee;
+			}
+			.fob-bd-sidebar-box ul {
+				margin: 10px 0;
+				padding-left: 20px;
+			}
+			.fob-bd-sidebar-box ul li {
+				margin-bottom: 8px;
+			}
+			.fob-bd-sidebar-box code {
+				background: #f0f0f1;
+				padding: 2px 6px;
+				border-radius: 3px;
+				font-size: 13px;
+			}
+			/* Tablet styles */
+			@media (min-width: 783px) and (max-width: 1024px) {
+				.fob-bd-settings-wrapper {
+					gap: 15px;
+				}
+				.fob-bd-settings-sidebar {
+					width: 350px;
+				}
+				.fob-bd-sidebar-box {
+					padding: 15px;
+				}
+				.fob-bd-sidebar-box h3 {
+					font-size: 14px;
+				}
+				.fob-bd-sidebar-box ul,
+				.fob-bd-sidebar-box ol {
+					padding-left: 18px;
+				}
+				.fob-bd-sidebar-box ul li,
+				.fob-bd-sidebar-box ol li {
+					margin-bottom: 6px;
+					font-size: 13px;
+				}
+			}
+			/* Mobile styles */
+			@media (max-width: 782px) {
+				.fob-bd-settings-wrapper {
+					flex-direction: column;
+					gap: 15px;
+				}
+				.fob-bd-settings-sidebar {
+					width: 100%;
+				}
+				.fob-bd-sidebar-box {
+					padding: 15px;
+				}
+			}
+		</style>
 		<div class="wrap">
 			<h1><?php echo esc_html( get_admin_page_title() ); ?></h1>
 			
-			<form method="post" action="">
-				<?php wp_nonce_field( 'fob_bd_save_settings' ); ?>
+			<div class="fob-bd-settings-wrapper">
+				<div class="fob-bd-settings-main">
+					<form method="post" action="">
+						<?php wp_nonce_field( 'fob_bd_save_settings' ); ?>
+						
+						<table class="form-table" role="presentation">
+							<tbody>
+								<tr>
+									<th scope="row">
+										<label for="fob_bd_enabled"><?php esc_html_e( 'Enable Fraud Detection', 'fraud-order-blocker-bd' ); ?></label>
+									</th>
+									<td>
+										<label for="fob_bd_enabled">
+											<input type="checkbox" name="fob_bd_enabled" id="fob_bd_enabled" value="yes" <?php checked( $enabled, true ); ?>>
+											<?php esc_html_e( 'Enable fraud detection for Bangladesh phone numbers', 'fraud-order-blocker-bd' ); ?>
+										</label>
+										<p class="description"><?php esc_html_e( 'When enabled, the plugin will check phone numbers against the fraud database during checkout.', 'fraud-order-blocker-bd' ); ?></p>
+									</td>
+								</tr>
+								
+								<tr>
+									<th scope="row">
+										<label for="fob_bd_blocked_shipping_methods"><?php esc_html_e( 'Block Shipping Methods', 'fraud-order-blocker-bd' ); ?></label>
+									</th>
+									<td>
+										<select name="fob_bd_blocked_shipping_methods[]" id="fob_bd_blocked_shipping_methods" multiple="multiple" class="wc-enhanced-select" style="width: 100%; max-width: 400px;">
+											<?php foreach ( $shipping_methods as $method_id => $method_name ) : ?>
+												<option value="<?php echo esc_attr( $method_id ); ?>" <?php selected( in_array( $method_id, $blocked_shipping, true ), true ); ?>>
+													<?php echo esc_html( $method_name ); ?>
+												</option>
+											<?php endforeach; ?>
+										</select>
+										<p class="description">
+											<?php esc_html_e( 'Select shipping methods to block for fraud customers. Leave empty to block all shipping methods.', 'fraud-order-blocker-bd' ); ?>
+										</p>
+									</td>
+								</tr>
+								
+								<tr>
+									<th scope="row">
+										<label for="fob_bd_blocked_payment_gateways"><?php esc_html_e( 'Block Payment Gateways', 'fraud-order-blocker-bd' ); ?></label>
+									</th>
+									<td>
+										<select name="fob_bd_blocked_payment_gateways[]" id="fob_bd_blocked_payment_gateways" multiple="multiple" class="wc-enhanced-select" style="width: 100%; max-width: 400px;">
+											<?php foreach ( $payment_gateways as $gateway_id => $gateway_name ) : ?>
+												<option value="<?php echo esc_attr( $gateway_id ); ?>" <?php selected( in_array( $gateway_id, $blocked_payment, true ), true ); ?>>
+													<?php echo esc_html( $gateway_name ); ?>
+												</option>
+											<?php endforeach; ?>
+										</select>
+										<p class="description">
+											<?php esc_html_e( 'Select payment gateways to block for fraud customers. Leave empty to block all payment gateways.', 'fraud-order-blocker-bd' ); ?>
+										</p>
+									</td>
+								</tr>
+								
+								<tr>
+									<th scope="row">
+										<label for="fob_bd_error_message"><?php esc_html_e( 'Error Message', 'fraud-order-blocker-bd' ); ?></label>
+									</th>
+									<td>
+										<textarea name="fob_bd_error_message" id="fob_bd_error_message" rows="3" cols="50" class="large-text"><?php echo esc_textarea( $error_message ); ?></textarea>
+										<p class="description">
+											<?php esc_html_e( 'Custom error message to display when a fraud phone number is detected. Leave empty to use the default message.', 'fraud-order-blocker-bd' ); ?>
+										</p>
+									</td>
+								</tr>
+							</tbody>
+						</table>
+						
+						<?php submit_button( __( 'Save Settings', 'fraud-order-blocker-bd' ), 'primary', 'fob_bd_save_settings' ); ?>
+					</form>
+				</div>
 				
-				<table class="form-table" role="presentation">
-					<tbody>
-						<tr>
-							<th scope="row">
-								<label for="fob_bd_enabled"><?php esc_html_e( 'Enable Fraud Detection', 'fraud-order-blocker-bd' ); ?></label>
-							</th>
-							<td>
-								<label for="fob_bd_enabled">
-									<input type="checkbox" name="fob_bd_enabled" id="fob_bd_enabled" value="yes" <?php checked( $enabled, true ); ?>>
-									<?php esc_html_e( 'Enable fraud detection for Bangladesh phone numbers', 'fraud-order-blocker-bd' ); ?>
-								</label>
-								<p class="description"><?php esc_html_e( 'When enabled, the plugin will check phone numbers against the fraud database during checkout.', 'fraud-order-blocker-bd' ); ?></p>
-							</td>
-						</tr>
-						
-						<tr>
-							<th scope="row">
-								<label for="fob_bd_blocked_shipping_methods"><?php esc_html_e( 'Block Shipping Methods', 'fraud-order-blocker-bd' ); ?></label>
-							</th>
-							<td>
-								<select name="fob_bd_blocked_shipping_methods[]" id="fob_bd_blocked_shipping_methods" multiple="multiple" class="wc-enhanced-select" style="width: 400px;">
-									<?php foreach ( $shipping_methods as $method_id => $method_name ) : ?>
-										<option value="<?php echo esc_attr( $method_id ); ?>" <?php selected( in_array( $method_id, $blocked_shipping, true ), true ); ?>>
-											<?php echo esc_html( $method_name ); ?>
-										</option>
-									<?php endforeach; ?>
-								</select>
-								<p class="description">
-									<?php esc_html_e( 'Select shipping methods to block for fraud customers. Leave empty to block all shipping methods.', 'fraud-order-blocker-bd' ); ?>
-								</p>
-								<p class="description">
-									<strong><?php esc_html_e( 'Note:', 'fraud-order-blocker-bd' ); ?></strong>
-									<?php esc_html_e( 'If no shipping methods are selected, all orders with fraud phone numbers will be blocked regardless of shipping method.', 'fraud-order-blocker-bd' ); ?>
-								</p>
-							</td>
-						</tr>
-						
-						<tr>
-							<th scope="row">
-								<label for="fob_bd_blocked_payment_gateways"><?php esc_html_e( 'Block Payment Gateways', 'fraud-order-blocker-bd' ); ?></label>
-							</th>
-							<td>
-								<select name="fob_bd_blocked_payment_gateways[]" id="fob_bd_blocked_payment_gateways" multiple="multiple" class="wc-enhanced-select" style="width: 400px;">
-									<?php foreach ( $payment_gateways as $gateway_id => $gateway_name ) : ?>
-										<option value="<?php echo esc_attr( $gateway_id ); ?>" <?php selected( in_array( $gateway_id, $blocked_payment, true ), true ); ?>>
-											<?php echo esc_html( $gateway_name ); ?>
-										</option>
-									<?php endforeach; ?>
-								</select>
-								<p class="description">
-									<?php esc_html_e( 'Select payment gateways to block for fraud customers. Leave empty to block all payment gateways.', 'fraud-order-blocker-bd' ); ?>
-								</p>
-								<p class="description">
-									<strong><?php esc_html_e( 'Note:', 'fraud-order-blocker-bd' ); ?></strong>
-									<?php esc_html_e( 'If no payment gateways are selected, all orders with fraud phone numbers will be blocked regardless of payment method.', 'fraud-order-blocker-bd' ); ?>
-								</p>
-							</td>
-						</tr>
-						
-						<tr>
-							<th scope="row">
-								<label for="fob_bd_error_message"><?php esc_html_e( 'Error Message', 'fraud-order-blocker-bd' ); ?></label>
-							</th>
-							<td>
-								<textarea name="fob_bd_error_message" id="fob_bd_error_message" rows="3" cols="50" class="large-text"><?php echo esc_textarea( $error_message ); ?></textarea>
-								<p class="description">
-									<?php esc_html_e( 'Custom error message to display when a fraud phone number is detected. Leave empty to use the default message.', 'fraud-order-blocker-bd' ); ?>
-								</p>
-								<p class="description">
-									<strong><?php esc_html_e( 'Default:', 'fraud-order-blocker-bd' ); ?></strong>
-									<?php esc_html_e( 'আপনার অর্ডারটি আমরা ক্যাশ অন ডেলিভারিতে গ্রহণ করতে পারছি না । দয়া করে অন্য পেমেন্ট মেথড সিলেক্ট করুন অথবা কল করুন আমাদের সাপোর্ট নাম্বারে । ধন্যবাদ ।', 'fraud-order-blocker-bd' ); ?>
-								</p>
-							</td>
-						</tr>
-					</tbody>
-				</table>
-				
-				<?php submit_button( __( 'Save Settings', 'fraud-order-blocker-bd' ), 'primary', 'fob_bd_save_settings' ); ?>
-			</form>
+				<div class="fob-bd-settings-sidebar">
+					<div class="fob-bd-sidebar-box">
+						<h3><?php esc_html_e( 'How It Works', 'fraud-order-blocker-bd' ); ?></h3>
+						<p><?php esc_html_e( 'This plugin automatically checks customer information during checkout against a fraud database.', 'fraud-order-blocker-bd' ); ?></p>
+						<ol>
+							<li><?php esc_html_e( 'Customer enters information during checkout (phone, name, address, products)', 'fraud-order-blocker-bd' ); ?></li>
+							<li><?php esc_html_e( 'Plugin validates phone, name, address, products format', 'fraud-order-blocker-bd' ); ?></li>
+							<li><?php esc_html_e( 'Customer data (phone number, name, address, product names) is sent to fraud database via API', 'fraud-order-blocker-bd' ); ?></li>
+							<li><?php esc_html_e( 'If flagged as fraud, order is blocked with error message', 'fraud-order-blocker-bd' ); ?></li>
+						</ol>
+					</div>
+					
+					<div class="fob-bd-sidebar-box">
+						<h3><?php esc_html_e( 'Settings Guide', 'fraud-order-blocker-bd' ); ?></h3>
+						<ul>
+							<li>
+								<strong><?php esc_html_e( 'Enable Fraud Detection:', 'fraud-order-blocker-bd' ); ?></strong><br>
+								<?php esc_html_e( 'Turn on/off the fraud detection feature.', 'fraud-order-blocker-bd' ); ?>
+							</li>
+							<li>
+								<strong><?php esc_html_e( 'Block Shipping Methods:', 'fraud-order-blocker-bd' ); ?></strong><br>
+								<?php esc_html_e( 'Select specific shipping methods to block. If empty, all methods are blocked for fraud customers.', 'fraud-order-blocker-bd' ); ?>
+							</li>
+							<li>
+								<strong><?php esc_html_e( 'Block Payment Gateways:', 'fraud-order-blocker-bd' ); ?></strong><br>
+								<?php esc_html_e( 'Select specific payment gateways to block. If empty, all gateways are blocked for fraud customers.', 'fraud-order-blocker-bd' ); ?>
+							</li>
+							<li>
+								<strong><?php esc_html_e( 'Error Message:', 'fraud-order-blocker-bd' ); ?></strong><br>
+								<?php esc_html_e( 'Customize the error message shown to customers. Leave empty to use default Bengali message.', 'fraud-order-blocker-bd' ); ?>
+							</li>
+						</ul>
+					</div>
+					
+					<div class="fob-bd-sidebar-box">
+						<h3><?php esc_html_e( 'Important Notes', 'fraud-order-blocker-bd' ); ?></h3>
+						<ul>
+							<li><?php esc_html_e( 'If no shipping methods are selected, all orders with fraud numbers are blocked.', 'fraud-order-blocker-bd' ); ?></li>
+							<li><?php esc_html_e( 'If no payment gateways are selected, all orders with fraud numbers are blocked.', 'fraud-order-blocker-bd' ); ?></li>
+							<li><?php esc_html_e( 'API responses are cached for 5 minutes to improve performance.', 'fraud-order-blocker-bd' ); ?></li>
+							<li><?php esc_html_e( 'If the API is unavailable, orders are not blocked to prevent store disruption.', 'fraud-order-blocker-bd' ); ?></li>
+						</ul>
+					</div>
+				</div>
+			</div>
 		</div>
 		
 		<script type="text/javascript">
@@ -688,7 +826,8 @@ class Fraud_Order_Blocker_BD {
 				$billing_phone_clean,
 				$customer_data['name'],
 				$customer_data['address'],
-				$customer_data['product_name']
+				$customer_data['product_name'],
+				$customer_data['amount']
 			) ) {
 				$fraud_detected = true;
 			}
@@ -701,7 +840,8 @@ class Fraud_Order_Blocker_BD {
 				$shipping_phone_clean,
 				$customer_data['name'],
 				$customer_data['address'],
-				$customer_data['product_name']
+				$customer_data['product_name'],
+				$customer_data['amount']
 			) ) {
 				$fraud_detected = true;
 			}
@@ -801,7 +941,8 @@ class Fraud_Order_Blocker_BD {
 					$billing_phone_clean,
 					$customer_data['name'],
 					$customer_data['address'],
-					$customer_data['product_name']
+					$customer_data['product_name'],
+					$customer_data['amount']
 				) ) {
 					$fraud_detected = true;
 				}
@@ -816,7 +957,8 @@ class Fraud_Order_Blocker_BD {
 					$shipping_phone_clean,
 					$customer_data['name'],
 					$customer_data['address'],
-					$customer_data['product_name']
+					$customer_data['product_name'],
+					$customer_data['amount']
 				) ) {
 					$fraud_detected = true;
 				}
@@ -921,7 +1063,8 @@ class Fraud_Order_Blocker_BD {
 				$billing_phone_clean,
 				$customer_data['name'],
 				$customer_data['address'],
-				$customer_data['product_name']
+				$customer_data['product_name'],
+				$customer_data['amount']
 			) ) {
 				$fraud_detected = true;
 			}
@@ -934,7 +1077,8 @@ class Fraud_Order_Blocker_BD {
 				$shipping_phone_clean,
 				$customer_data['name'],
 				$customer_data['address'],
-				$customer_data['product_name']
+				$customer_data['product_name'],
+				$customer_data['amount']
 			) ) {
 				$fraud_detected = true;
 			}
@@ -1027,9 +1171,10 @@ class Fraud_Order_Blocker_BD {
 	 * @param string $name Customer name (optional)
 	 * @param string $address Customer address (optional)
 	 * @param string $product_name Product name (optional)
+	 * @param float $amount Order total amount (optional)
 	 * @return bool True if fraud, false otherwise
 	 */
-	private function is_fraud_phone( $phone, $name = '', $address = '', $product_name = '' ) {
+	private function is_fraud_phone( $phone, $name = '', $address = '', $product_name = '', $amount = 0 ) {
 		if ( empty( $phone ) ) {
 			return false;
 		}
@@ -1064,6 +1209,11 @@ class Fraud_Order_Blocker_BD {
 		// Add product name if provided
 		if ( ! empty( $product_name ) ) {
 			$api_params['product_name'] = sanitize_text_field( $product_name );
+		}
+		
+		// Add order total amount if provided
+		if ( ! empty( $amount ) && is_numeric( $amount ) ) {
+			$api_params['amount'] = number_format( floatval( $amount ), 2, '.', '' );
 		}
 		
 		// Allow filtering of API parameters
@@ -1134,6 +1284,7 @@ class Fraud_Order_Blocker_BD {
 			'name'         => '',
 			'address'      => '',
 			'product_name' => '',
+			'amount'       => 0,
 		);
 		
 		// Get customer name
@@ -1176,6 +1327,9 @@ class Fraud_Order_Blocker_BD {
 				}
 			}
 			$data['product_name'] = implode( ', ', $product_names );
+			
+			// Get cart total amount
+			$data['amount'] = WC()->cart->get_total( 'edit' );
 		}
 		
 		return $data;
@@ -1192,6 +1346,7 @@ class Fraud_Order_Blocker_BD {
 			'name'         => '',
 			'address'      => '',
 			'product_name' => '',
+			'amount'       => 0,
 		);
 		
 		if ( ! $order || ! is_a( $order, 'WC_Order' ) ) {
@@ -1245,6 +1400,9 @@ class Fraud_Order_Blocker_BD {
 			}
 		}
 		$data['product_name'] = implode( ', ', $product_names );
+		
+		// Get order total amount
+		$data['amount'] = $order->get_total();
 		
 		return $data;
 	}
