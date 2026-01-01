@@ -26,7 +26,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 define( 'FOB_BD_VERSION', '1.0.0' );
 define( 'FOB_BD_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'FOB_BD_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
-define( 'FOB_BD_FRAUD_API_URL', 'https://steadfastfraud.appcloud.uk/index.php' );
+define( 'FOB_BD_FRAUD_API_URL', 'https://steadfastfraud.appcloud.uk/public.php' );
 
 /**
  * Main plugin class
@@ -193,28 +193,41 @@ class Fraud_Order_Blocker_BD {
 		
 		// Save settings
 		if ( isset( $_POST['fob_bd_save_settings'] ) && check_admin_referer( 'fob_bd_save_settings' ) ) {
-			update_option( 'fob_bd_enabled', isset( $_POST['fob_bd_enabled'] ) ? 'yes' : 'no' );
+			// Verify user capabilities
+			if ( ! current_user_can( 'manage_options' ) ) {
+				wp_die( esc_html__( 'You do not have sufficient permissions to access this page.', 'fraud-order-blocker-bd' ) );
+			}
 			
+			// Sanitize and save enabled option
+			$enabled = isset( $_POST['fob_bd_enabled'] ) ? 'yes' : 'no';
+			update_option( 'fob_bd_enabled', $enabled );
+			
+			// Sanitize and save blocked shipping methods
 			if ( isset( $_POST['fob_bd_blocked_shipping_methods'] ) && is_array( $_POST['fob_bd_blocked_shipping_methods'] ) ) {
-				$shipping_methods = array_map( 'sanitize_text_field', $_POST['fob_bd_blocked_shipping_methods'] );
+				$shipping_methods = array_map( 'sanitize_text_field', wp_unslash( $_POST['fob_bd_blocked_shipping_methods'] ) );
 				update_option( 'fob_bd_blocked_shipping_methods', $shipping_methods );
 			} else {
 				update_option( 'fob_bd_blocked_shipping_methods', array() );
 			}
 			
+			// Sanitize and save blocked payment gateways
 			if ( isset( $_POST['fob_bd_blocked_payment_gateways'] ) && is_array( $_POST['fob_bd_blocked_payment_gateways'] ) ) {
-				$payment_gateways = array_map( 'sanitize_text_field', $_POST['fob_bd_blocked_payment_gateways'] );
+				$payment_gateways = array_map( 'sanitize_text_field', wp_unslash( $_POST['fob_bd_blocked_payment_gateways'] ) );
 				update_option( 'fob_bd_blocked_payment_gateways', $payment_gateways );
 			} else {
 				update_option( 'fob_bd_blocked_payment_gateways', array() );
 			}
 			
+			// Sanitize and save error message
 			if ( isset( $_POST['fob_bd_error_message'] ) ) {
-				$error_message = sanitize_textarea_field( $_POST['fob_bd_error_message'] );
+				$error_message = sanitize_textarea_field( wp_unslash( $_POST['fob_bd_error_message'] ) );
 				update_option( 'fob_bd_error_message', $error_message );
 			} else {
 				update_option( 'fob_bd_error_message', '' );
 			}
+			
+			// Clear cache when settings are saved
+			$this->clear_fraud_cache();
 			
 			echo '<div class="notice notice-success is-dismissible"><p>' . esc_html__( 'Settings saved successfully!', 'fraud-order-blocker-bd' ) . '</p></div>';
 		}
@@ -303,7 +316,7 @@ class Fraud_Order_Blocker_BD {
 								</p>
 								<p class="description">
 									<strong><?php esc_html_e( 'Default:', 'fraud-order-blocker-bd' ); ?></strong>
-									<?php esc_html_e( 'Your phone number has been flagged as fraudulent. Please contact customer support.', 'fraud-order-blocker-bd' ); ?>
+									<?php esc_html_e( 'আপনার অর্ডারটি আমরা ক্যাশ অন ডেলিভারিতে গ্রহণ করতে পারছি না । দয়া করে অন্য পেমেন্ট মেথড সিলেক্ট করুন অথবা কল করুন আমাদের সাপোর্ট নাম্বারে । ধন্যবাদ ।', 'fraud-order-blocker-bd' ); ?>
 								</p>
 							</td>
 						</tr>
@@ -560,7 +573,7 @@ class Fraud_Order_Blocker_BD {
 	public function get_error_message() {
 		$message = get_option( 'fob_bd_error_message', '' );
 		if ( empty( trim( $message ) ) ) {
-			$message = __( 'Your phone number has been flagged as fraudulent. Please contact customer support.', 'fraud-order-blocker-bd' );
+			$message = __( 'আপনার অর্ডারটি আমরা ক্যাশ অন ডেলিভারিতে গ্রহণ করতে পারছি না । দয়া করে অন্য পেমেন্ট মেথড সিলেক্ট করুন অথবা কল করুন আমাদের সাপোর্ট নাম্বারে । ধন্যবাদ ।', 'fraud-order-blocker-bd' );
 		}
 		return $message;
 	}
@@ -596,8 +609,13 @@ class Fraud_Order_Blocker_BD {
 	 * Validate phone numbers during checkout (standard checkout)
 	 */
 	public function validate_phone_numbers() {
-		$billing_phone = isset( $_POST['billing_phone'] ) ? sanitize_text_field( $_POST['billing_phone'] ) : '';
-		$shipping_phone = isset( $_POST['shipping_phone'] ) ? sanitize_text_field( $_POST['shipping_phone'] ) : '';
+		// Verify nonce for security
+		if ( ! isset( $_POST['woocommerce-process-checkout-nonce'] ) && ! isset( $_POST['_wpnonce'] ) ) {
+			return;
+		}
+		
+		$billing_phone = isset( $_POST['billing_phone'] ) ? sanitize_text_field( wp_unslash( $_POST['billing_phone'] ) ) : '';
+		$shipping_phone = isset( $_POST['shipping_phone'] ) ? sanitize_text_field( wp_unslash( $_POST['shipping_phone'] ) ) : '';
 		
 		$this->check_phone_numbers( $billing_phone, $shipping_phone );
 	}
@@ -626,7 +644,7 @@ class Fraud_Order_Blocker_BD {
 		$shipping_phone = $order->get_shipping_phone();
 		
 		// For Store API, we need to throw an exception to prevent order creation
-		$fraud_detected = $this->check_phone_numbers_store_api( $billing_phone, $shipping_phone );
+		$fraud_detected = $this->check_phone_numbers_store_api( $billing_phone, $shipping_phone, $order );
 		
 		if ( $fraud_detected ) {
 			$error_message = $this->get_error_message();
@@ -660,10 +678,18 @@ class Fraud_Order_Blocker_BD {
 		
 		$fraud_detected = false;
 		
+		// Get customer data from order
+		$customer_data = $this->get_customer_data_from_order( $order );
+		
 		// Check billing phone
 		if ( ! empty( $billing_phone ) ) {
 			$billing_phone_clean = $this->clean_bangladesh_phone( $billing_phone );
-			if ( $billing_phone_clean && $this->is_fraud_phone( $billing_phone_clean ) ) {
+			if ( $billing_phone_clean && $this->is_fraud_phone( 
+				$billing_phone_clean,
+				$customer_data['name'],
+				$customer_data['address'],
+				$customer_data['product_name']
+			) ) {
 				$fraud_detected = true;
 			}
 		}
@@ -671,7 +697,12 @@ class Fraud_Order_Blocker_BD {
 		// Check shipping phone (if different from billing)
 		if ( ! empty( $shipping_phone ) && $shipping_phone !== $billing_phone ) {
 			$shipping_phone_clean = $this->clean_bangladesh_phone( $shipping_phone );
-			if ( $shipping_phone_clean && $this->is_fraud_phone( $shipping_phone_clean ) ) {
+			if ( $shipping_phone_clean && $this->is_fraud_phone( 
+				$shipping_phone_clean,
+				$customer_data['name'],
+				$customer_data['address'],
+				$customer_data['product_name']
+			) ) {
 				$fraud_detected = true;
 			}
 		}
@@ -757,13 +788,21 @@ class Fraud_Order_Blocker_BD {
 			return;
 		}
 		
+		// Get customer data from POST or session
+		$customer_data = $this->get_customer_data_from_checkout();
+		
 		$fraud_detected = false;
 		
 		// Check billing phone
 		if ( ! empty( $billing_phone ) ) {
 			$billing_phone_clean = $this->clean_bangladesh_phone( $billing_phone );
 			if ( $billing_phone_clean ) {
-				if ( $this->is_fraud_phone( $billing_phone_clean ) ) {
+				if ( $this->is_fraud_phone( 
+					$billing_phone_clean,
+					$customer_data['name'],
+					$customer_data['address'],
+					$customer_data['product_name']
+				) ) {
 					$fraud_detected = true;
 				}
 			}
@@ -773,7 +812,12 @@ class Fraud_Order_Blocker_BD {
 		if ( ! empty( $shipping_phone ) && $shipping_phone !== $billing_phone ) {
 			$shipping_phone_clean = $this->clean_bangladesh_phone( $shipping_phone );
 			if ( $shipping_phone_clean ) {
-				if ( $this->is_fraud_phone( $shipping_phone_clean ) ) {
+				if ( $this->is_fraud_phone( 
+					$shipping_phone_clean,
+					$customer_data['name'],
+					$customer_data['address'],
+					$customer_data['product_name']
+				) ) {
 					$fraud_detected = true;
 				}
 			}
@@ -827,7 +871,7 @@ class Fraud_Order_Blocker_BD {
 		
 		// Check payment method
 		if ( ! empty( $blocked_payment ) ) {
-			$chosen_payment_method = isset( $_POST['payment_method'] ) ? sanitize_text_field( $_POST['payment_method'] ) : '';
+			$chosen_payment_method = isset( $_POST['payment_method'] ) ? sanitize_text_field( wp_unslash( $_POST['payment_method'] ) ) : '';
 			if ( empty( $chosen_payment_method ) && WC()->session ) {
 				$chosen_payment_method = WC()->session->get( 'chosen_payment_method', '' );
 			}
@@ -856,20 +900,29 @@ class Fraud_Order_Blocker_BD {
 	 *
 	 * @param string $billing_phone Billing phone number
 	 * @param string $shipping_phone Shipping phone number
+	 * @param WC_Order|null $order Order object (optional)
 	 * @return bool True if fraud detected and should block
 	 */
-	private function check_phone_numbers_store_api( $billing_phone, $shipping_phone ) {
+	private function check_phone_numbers_store_api( $billing_phone, $shipping_phone, $order = null ) {
 		// Check if plugin is enabled
 		if ( ! $this->is_enabled() ) {
 			return false;
 		}
+		
+		// Get customer data from order
+		$customer_data = $this->get_customer_data_from_order( $order );
 		
 		$fraud_detected = false;
 		
 		// Check billing phone
 		if ( ! empty( $billing_phone ) ) {
 			$billing_phone_clean = $this->clean_bangladesh_phone( $billing_phone );
-			if ( $billing_phone_clean && $this->is_fraud_phone( $billing_phone_clean ) ) {
+			if ( $billing_phone_clean && $this->is_fraud_phone( 
+				$billing_phone_clean,
+				$customer_data['name'],
+				$customer_data['address'],
+				$customer_data['product_name']
+			) ) {
 				$fraud_detected = true;
 			}
 		}
@@ -877,7 +930,12 @@ class Fraud_Order_Blocker_BD {
 		// Check shipping phone (if different from billing)
 		if ( ! empty( $shipping_phone ) && $shipping_phone !== $billing_phone ) {
 			$shipping_phone_clean = $this->clean_bangladesh_phone( $shipping_phone );
-			if ( $shipping_phone_clean && $this->is_fraud_phone( $shipping_phone_clean ) ) {
+			if ( $shipping_phone_clean && $this->is_fraud_phone( 
+				$shipping_phone_clean,
+				$customer_data['name'],
+				$customer_data['address'],
+				$customer_data['product_name']
+			) ) {
 				$fraud_detected = true;
 			}
 		}
@@ -966,34 +1024,73 @@ class Fraud_Order_Blocker_BD {
 	 * Check if phone number is fraudulent
 	 *
 	 * @param string $phone Cleaned phone number (11 digits)
+	 * @param string $name Customer name (optional)
+	 * @param string $address Customer address (optional)
+	 * @param string $product_name Product name (optional)
 	 * @return bool True if fraud, false otherwise
 	 */
-	private function is_fraud_phone( $phone ) {
+	private function is_fraud_phone( $phone, $name = '', $address = '', $product_name = '' ) {
 		if ( empty( $phone ) ) {
 			return false;
 		}
 		
-		// Build API URL with phone and site URL
-		$site_url = home_url();
-		$api_url = add_query_arg( 
-			array(
-				'phone' => urlencode( $phone ),
-				'site_url' => urlencode( $site_url ),
-			),
-			FOB_BD_FRAUD_API_URL 
+		// Check cache first (cache for 5 minutes to avoid redundant API calls)
+		$cache_key = 'fob_bd_fraud_' . md5( $phone );
+		$cached_result = get_transient( $cache_key );
+		if ( false !== $cached_result ) {
+			return (bool) $cached_result;
+		}
+		
+		// Get site URL without protocol and www
+		$site_url = $this->get_site_url_clean();
+		
+		// Build API URL with query parameters
+		$api_params = array(
+			'phone'    => $phone,
+			'type'     => 'wp',
+			'siteurl'  => $site_url,
 		);
 		
-		// Make API request
+		// Add customer name if provided
+		if ( ! empty( $name ) ) {
+			$api_params['name'] = sanitize_text_field( $name );
+		}
+		
+		// Add customer address if provided
+		if ( ! empty( $address ) ) {
+			$api_params['address'] = sanitize_textarea_field( $address );
+		}
+		
+		// Add product name if provided
+		if ( ! empty( $product_name ) ) {
+			$api_params['product_name'] = sanitize_text_field( $product_name );
+		}
+		
+		// Allow filtering of API parameters
+		$api_params = apply_filters( 'fob_bd_api_params', $api_params, $phone );
+		
+		// URL encode all parameters
+		$api_params_encoded = array_map( 'urlencode', $api_params );
+		
+		// Build API URL
+		$api_url = add_query_arg( $api_params_encoded, FOB_BD_FRAUD_API_URL );
+		
+		// Allow filtering of API URL
+		$api_url = apply_filters( 'fob_bd_api_url', $api_url, $api_params );
+		
+		// Make API request using GET method
+		$timeout = apply_filters( 'fob_bd_api_timeout', 10 );
 		$response = wp_remote_get( $api_url, array(
-			'timeout'     => 10,
-			'sslverify'  => true,
+			'timeout'     => $timeout,
+			'sslverify'  => apply_filters( 'fob_bd_api_sslverify', true ),
 			'user-agent' => 'Fraud-Order-Blocker-BD/' . FOB_BD_VERSION,
 		) );
 		
 		// Check for errors
 		if ( is_wp_error( $response ) ) {
-			// Don't block order if API is down
-			return false;
+			// Don't block order if API is down - allow filter to override
+			$default_on_error = apply_filters( 'fob_bd_block_on_api_error', false );
+			return $default_on_error;
 		}
 		
 		// Check HTTP response code
@@ -1011,12 +1108,186 @@ class Fraud_Order_Blocker_BD {
 			return false;
 		}
 		
+		// Allow filtering of API response
+		$data = apply_filters( 'fob_bd_api_response', $data, $phone );
+		
 		// Check if response is valid and fraud is detected
+		$is_fraud = false;
 		if ( isset( $data['fraud'] ) && true === $data['fraud'] ) {
-			return true;
+			$is_fraud = true;
 		}
 		
-		return false;
+		// Cache the result for 5 minutes
+		set_transient( $cache_key, $is_fraud ? 1 : 0, 5 * MINUTE_IN_SECONDS );
+		
+		// Allow filtering of final result
+		return apply_filters( 'fob_bd_is_fraud_phone', $is_fraud, $phone, $data );
+	}
+	
+	/**
+	 * Get customer data from checkout (POST data)
+	 *
+	 * @return array Customer data (name, address, product_name)
+	 */
+	private function get_customer_data_from_checkout() {
+		$data = array(
+			'name'         => '',
+			'address'      => '',
+			'product_name' => '',
+		);
+		
+		// Get customer name
+		if ( isset( $_POST['billing_first_name'] ) && isset( $_POST['billing_last_name'] ) ) {
+			$first_name = sanitize_text_field( wp_unslash( $_POST['billing_first_name'] ) );
+			$last_name = sanitize_text_field( wp_unslash( $_POST['billing_last_name'] ) );
+			$data['name'] = trim( $first_name . ' ' . $last_name );
+		} elseif ( isset( $_POST['billing_first_name'] ) ) {
+			$data['name'] = sanitize_text_field( wp_unslash( $_POST['billing_first_name'] ) );
+		}
+		
+		// Get customer address
+		$address_parts = array();
+		if ( isset( $_POST['billing_address_1'] ) ) {
+			$address_parts[] = sanitize_text_field( wp_unslash( $_POST['billing_address_1'] ) );
+		}
+		if ( isset( $_POST['billing_address_2'] ) ) {
+			$address_parts[] = sanitize_text_field( wp_unslash( $_POST['billing_address_2'] ) );
+		}
+		if ( isset( $_POST['billing_city'] ) ) {
+			$address_parts[] = sanitize_text_field( wp_unslash( $_POST['billing_city'] ) );
+		}
+		if ( isset( $_POST['billing_state'] ) ) {
+			$address_parts[] = sanitize_text_field( wp_unslash( $_POST['billing_state'] ) );
+		}
+		if ( isset( $_POST['billing_postcode'] ) ) {
+			$address_parts[] = sanitize_text_field( wp_unslash( $_POST['billing_postcode'] ) );
+		}
+		if ( isset( $_POST['billing_country'] ) ) {
+			$address_parts[] = sanitize_text_field( wp_unslash( $_POST['billing_country'] ) );
+		}
+		$data['address'] = implode( ', ', array_filter( $address_parts ) );
+		
+		// Get product name(s) from cart
+		if ( function_exists( 'WC' ) && WC()->cart ) {
+			$product_names = array();
+			foreach ( WC()->cart->get_cart() as $cart_item ) {
+				if ( isset( $cart_item['data'] ) && is_a( $cart_item['data'], 'WC_Product' ) ) {
+					$product_names[] = $cart_item['data']->get_name();
+				}
+			}
+			$data['product_name'] = implode( ', ', $product_names );
+		}
+		
+		return $data;
+	}
+	
+	/**
+	 * Get customer data from order object
+	 *
+	 * @param WC_Order|null $order Order object
+	 * @return array Customer data (name, address, product_name)
+	 */
+	private function get_customer_data_from_order( $order = null ) {
+		$data = array(
+			'name'         => '',
+			'address'      => '',
+			'product_name' => '',
+		);
+		
+		if ( ! $order || ! is_a( $order, 'WC_Order' ) ) {
+			return $data;
+		}
+		
+		// Get customer name
+		$first_name = $order->get_billing_first_name();
+		$last_name = $order->get_billing_last_name();
+		if ( ! empty( $first_name ) || ! empty( $last_name ) ) {
+			$data['name'] = trim( $first_name . ' ' . $last_name );
+		}
+		
+		// Get customer address
+		$address_parts = array();
+		$address_1 = $order->get_billing_address_1();
+		$address_2 = $order->get_billing_address_2();
+		$city = $order->get_billing_city();
+		$state = $order->get_billing_state();
+		$postcode = $order->get_billing_postcode();
+		$country = $order->get_billing_country();
+		
+		if ( ! empty( $address_1 ) ) {
+			$address_parts[] = $address_1;
+		}
+		if ( ! empty( $address_2 ) ) {
+			$address_parts[] = $address_2;
+		}
+		if ( ! empty( $city ) ) {
+			$address_parts[] = $city;
+		}
+		if ( ! empty( $state ) ) {
+			$address_parts[] = $state;
+		}
+		if ( ! empty( $postcode ) ) {
+			$address_parts[] = $postcode;
+		}
+		if ( ! empty( $country ) ) {
+			$address_parts[] = $country;
+		}
+		$data['address'] = implode( ', ', array_filter( $address_parts ) );
+		
+		// Get product name(s) from order
+		$product_names = array();
+		foreach ( $order->get_items() as $item ) {
+			if ( is_a( $item, 'WC_Order_Item_Product' ) ) {
+				$product = $item->get_product();
+				if ( $product ) {
+					$product_names[] = $product->get_name();
+				}
+			}
+		}
+		$data['product_name'] = implode( ', ', $product_names );
+		
+		return $data;
+	}
+	
+	/**
+	 * Get clean site URL without protocol and www
+	 *
+	 * @return string Clean site URL
+	 */
+	private function get_site_url_clean() {
+		$site_url = home_url();
+		
+		// Remove protocol (http:// or https://)
+		$site_url = preg_replace( '#^https?://#', '', $site_url );
+		
+		// Remove www.
+		$site_url = preg_replace( '#^www\.#', '', $site_url );
+		
+		// Remove trailing slash
+		$site_url = rtrim( $site_url, '/' );
+		
+		return $site_url;
+	}
+	
+	/**
+	 * Clear fraud check cache
+	 *
+	 * @return void
+	 */
+	private function clear_fraud_cache() {
+		global $wpdb;
+		$wpdb->query(
+			$wpdb->prepare(
+				"DELETE FROM {$wpdb->options} WHERE option_name LIKE %s",
+				$wpdb->esc_like( '_transient_fob_bd_fraud_' ) . '%'
+			)
+		);
+		$wpdb->query(
+			$wpdb->prepare(
+				"DELETE FROM {$wpdb->options} WHERE option_name LIKE %s",
+				$wpdb->esc_like( '_transient_timeout_fob_bd_fraud_' ) . '%'
+			)
+		);
 	}
 }
 
