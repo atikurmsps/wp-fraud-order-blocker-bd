@@ -21,6 +21,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+
 // Define plugin constants
 define( 'FOB_BD_VERSION', '1.0.0' );
 define( 'FOB_BD_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
