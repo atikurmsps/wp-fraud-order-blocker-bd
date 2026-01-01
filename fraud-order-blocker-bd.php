@@ -833,17 +833,20 @@ class Fraud_Order_Blocker_BD {
 			}
 		}
 		
-		// Check shipping phone (if different from billing)
+		// Check shipping phone (only if different from billing to avoid duplicate API calls)
 		if ( ! empty( $shipping_phone ) && $shipping_phone !== $billing_phone ) {
 			$shipping_phone_clean = $this->clean_bangladesh_phone( $shipping_phone );
-			if ( $shipping_phone_clean && $this->is_fraud_phone( 
-				$shipping_phone_clean,
-				$customer_data['name'],
-				$customer_data['address'],
-				$customer_data['product_name'],
-				$customer_data['amount']
-			) ) {
-				$fraud_detected = true;
+			// Only check if cleaned phone is different from billing cleaned phone
+			if ( $shipping_phone_clean && $shipping_phone_clean !== $billing_phone_clean ) {
+				if ( $this->is_fraud_phone( 
+					$shipping_phone_clean,
+					$customer_data['name'],
+					$customer_data['address'],
+					$customer_data['product_name'],
+					$customer_data['amount']
+				) ) {
+					$fraud_detected = true;
+				}
 			}
 		}
 		
@@ -934,6 +937,7 @@ class Fraud_Order_Blocker_BD {
 		$fraud_detected = false;
 		
 		// Check billing phone
+		$billing_phone_clean = '';
 		if ( ! empty( $billing_phone ) ) {
 			$billing_phone_clean = $this->clean_bangladesh_phone( $billing_phone );
 			if ( $billing_phone_clean ) {
@@ -949,10 +953,11 @@ class Fraud_Order_Blocker_BD {
 			}
 		}
 		
-		// Check shipping phone (if different from billing)
+		// Check shipping phone (only if different from billing to avoid duplicate API calls)
 		if ( ! empty( $shipping_phone ) && $shipping_phone !== $billing_phone ) {
 			$shipping_phone_clean = $this->clean_bangladesh_phone( $shipping_phone );
-			if ( $shipping_phone_clean ) {
+			// Only check if cleaned phone is different from billing cleaned phone
+			if ( $shipping_phone_clean && $shipping_phone_clean !== $billing_phone_clean ) {
 				if ( $this->is_fraud_phone( 
 					$shipping_phone_clean,
 					$customer_data['name'],
@@ -1070,17 +1075,20 @@ class Fraud_Order_Blocker_BD {
 			}
 		}
 		
-		// Check shipping phone (if different from billing)
+		// Check shipping phone (only if different from billing to avoid duplicate API calls)
 		if ( ! empty( $shipping_phone ) && $shipping_phone !== $billing_phone ) {
 			$shipping_phone_clean = $this->clean_bangladesh_phone( $shipping_phone );
-			if ( $shipping_phone_clean && $this->is_fraud_phone( 
-				$shipping_phone_clean,
-				$customer_data['name'],
-				$customer_data['address'],
-				$customer_data['product_name'],
-				$customer_data['amount']
-			) ) {
-				$fraud_detected = true;
+			// Only check if cleaned phone is different from billing cleaned phone
+			if ( $shipping_phone_clean && $shipping_phone_clean !== $billing_phone_clean ) {
+				if ( $this->is_fraud_phone( 
+					$shipping_phone_clean,
+					$customer_data['name'],
+					$customer_data['address'],
+					$customer_data['product_name'],
+					$customer_data['amount']
+				) ) {
+					$fraud_detected = true;
+				}
 			}
 		}
 		
@@ -1179,10 +1187,18 @@ class Fraud_Order_Blocker_BD {
 			return false;
 		}
 		
-		// Check cache first (cache for 5 minutes to avoid redundant API calls)
+		// Check request-level cache first (prevents duplicate calls in same request)
+		$request_cache_key = md5( $phone . $name . $address . $product_name . $amount );
+		if ( isset( $this->request_cache[ $request_cache_key ] ) ) {
+			return $this->request_cache[ $request_cache_key ];
+		}
+		
+		// Check transient cache (5 minutes) - cache key based on phone only for better hit rate
 		$cache_key = 'fob_bd_fraud_' . md5( $phone );
 		$cached_result = get_transient( $cache_key );
 		if ( false !== $cached_result ) {
+			// Store in request cache and return
+			$this->request_cache[ $request_cache_key ] = (bool) $cached_result;
 			return (bool) $cached_result;
 		}
 		
@@ -1267,8 +1283,11 @@ class Fraud_Order_Blocker_BD {
 			$is_fraud = true;
 		}
 		
-		// Cache the result for 5 minutes
+		// Cache the result for 5 minutes (based on phone number only)
 		set_transient( $cache_key, $is_fraud ? 1 : 0, 5 * MINUTE_IN_SECONDS );
+		
+		// Store in request-level cache to prevent duplicate calls
+		$this->request_cache[ $request_cache_key ] = $is_fraud;
 		
 		// Allow filtering of final result
 		return apply_filters( 'fob_bd_is_fraud_phone', $is_fraud, $phone, $data );
